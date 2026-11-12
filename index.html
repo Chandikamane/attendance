@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Attendance</title>
+  <meta name="theme-color" content="#1a4d7a">
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <style>
+    body { font-family: Arial, sans-serif; background:#eef3f8; margin:0; padding:20px; }
+    .card { max-width:400px; margin:auto; background:#fff; border-radius:16px; padding:24px;
+            box-shadow:0 2px 10px rgba(0,0,0,.1); text-align:center; }
+    h2 { margin:0 0 4px; color:#1a4d7a; }
+    #clock { font-size:32px; font-weight:bold; margin:10px 0 16px; color:#333; }
+    #hello { font-size:20px; margin-bottom:4px; }
+    #mail { font-size:13px; color:#777; margin-bottom:16px; }
+    #gbtn { display:flex; justify-content:center; margin:12px 0; }
+    .big { width:100%; padding:18px; font-size:20px; font-weight:bold; border:none;
+           border-radius:12px; color:#fff; margin-bottom:12px; cursor:pointer; }
+    #inBtn { background:#2e8b57; }
+    #outBtn { background:#c0392b; }
+    .big:disabled { opacity:.5; }
+    #logout { background:none; border:none; color:#1a4d7a; text-decoration:underline;
+              font-size:14px; margin-top:8px; cursor:pointer; }
+    #msg { font-size:17px; min-height:24px; margin-top:8px; }
+    .ok { color:#2e8b57; } .err { color:#c0392b; }
+    .hide { display:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Lab Attendance</h2>
+    <div id="clock">--:--</div>
+
+    <!-- Login wenna kalin -->
+    <div id="loginBox">
+      <p>Oyaage Gmail account eken login wenna</p>
+      <div id="gbtn"></div>
+    </div>
+
+    <!-- Login unata passe -->
+    <div id="appBox" class="hide">
+      <div id="hello"></div>
+      <div id="mail"></div>
+      <button class="big" id="inBtn" onclick="mark('IN')">CHECK IN</button>
+      <button class="big" id="outBtn" onclick="mark('OUT')">CHECK OUT</button>
+      <button id="logout" onclick="logout()">Logout</button>
+    </div>
+
+    <div id="msg"></div>
+  </div>
+
+<script>
+  // ===== OYAA WENAS KARANNA ONA THANA =====
+  const API_URL = 'https://script.google.com/macros/s/AKfycbwX5EL3iBNxSW41xB9nwRPpTvCY7Fs9mJhcxCYvJkZLsnFqdrLU84mgEmSah-D5KgE-bA/exec';
+  const CLIENT_ID = '924943127543-5anijnq9g79jfg1po9c8emom8t1umv7e.apps.googleusercontent.com';
+  // ========================================
+
+  let token = null;
+
+  // Orlosuwa
+  setInterval(() => {
+    document.getElementById('clock').textContent =
+      new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Colombo' });
+  }, 1000);
+
+  function $(id) { return document.getElementById(id); }
+  function show(text, cls) { $('msg').textContent = text; $('msg').className = cls || ''; }
+  function setBusy(b) { $('inBtn').disabled = b; $('outBtn').disabled = b; }
+
+  // Me phone ekata wenama ID ekak (palaweni parata hadala save karanawa)
+  function getDeviceId() {
+    try {
+      let id = localStorage.getItem('labDeviceId');
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+             : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        localStorage.setItem('labDeviceId', id);
+      }
+      return id;
+    } catch (e) { return null; }
+  }
+
+  // Apps Script ekata request yawanna
+  function api(data) {
+    data.token = token;
+    return fetch(API_URL, { method: 'POST', body: JSON.stringify(data) })
+      .then(r => r.json());
+  }
+
+  // Google library eka load unama
+  window.onGoogleLibraryLoad = function () {
+    google.accounts.id.initialize({
+      client_id: CLIENT_ID,
+      callback: onSignIn,
+      auto_select: true
+    });
+    google.accounts.id.renderButton($('gbtn'), { theme: 'filled_blue', size: 'large', width: 280 });
+    google.accounts.id.prompt();
+  };
+
+  function onSignIn(resp) {
+    token = resp.credential;
+    show('Login wenawa...');
+    api({ action: 'login' }).then(res => {
+      if (!res.ok) { token = null; return show(res.msg, 'err'); }
+      $('hello').textContent = 'Hello, ' + res.name + ' 👋';
+      $('mail').textContent = res.email;
+      $('loginBox').classList.add('hide');
+      $('appBox').classList.remove('hide');
+      show('');
+    }).catch(() => show('Internet eka check karanna.', 'err'));
+  }
+
+  function logout() {
+    token = null;
+    google.accounts.id.disableAutoSelect();
+    $('appBox').classList.add('hide');
+    $('loginBox').classList.remove('hide');
+    show('');
+  }
+
+  function mark(type) {
+    const deviceId = getDeviceId();
+    if (!deviceId) return show('Me browser eke data save karanna bae. Chrome eken open karanna.', 'err');
+    if (!navigator.geolocation) return show('Me phone eke GPS wada karanne na.', 'err');
+
+    setBusy(true);
+    show('Location eka gannawa...');
+
+    navigator.geolocation.getCurrentPosition(pos => {
+      show('Save karanawa...');
+      api({
+        action: 'mark', type: type, deviceId: deviceId,
+        lat: pos.coords.latitude, lng: pos.coords.longitude
+      }).then(res => {
+        setBusy(false);
+        if (!res.ok && String(res.msg).indexOf('EXPIRED') === 0) {
+          logout();
+          google.accounts.id.prompt();
+          return show('Login eka expire wela. Aye login wela try karanna.', 'err');
+        }
+        show(res.msg, res.ok ? 'ok' : 'err');
+      }).catch(() => { setBusy(false); show('Internet eka check karanna.', 'err'); });
+    }, () => {
+      setBusy(false);
+      show('Location ganna bae. Phone eke Location ON karala, permission "Allow" karanna.', 'err');
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
+</script>
+</body>
+</html>
