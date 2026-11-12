@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lab Attendance</title>
   <meta name="theme-color" content="#1a4d7a">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://accounts.google.com/gsi/client" async></script>
   <style>
     body { font-family: Arial, sans-serif; background:#eef3f8; margin:0; padding:20px; }
-    .card { max-width:400px; margin:auto; background:#fff; border-radius:16px; padding:24px;
+    .card { max-width:420px; margin:auto; background:#fff; border-radius:16px; padding:24px;
             box-shadow:0 2px 10px rgba(0,0,0,.1); text-align:center; }
     h2 { margin:0 0 4px; color:#1a4d7a; }
     #clock { font-size:32px; font-weight:bold; margin:10px 0 16px; color:#333; }
@@ -19,12 +21,23 @@
            border-radius:12px; color:#fff; margin-bottom:12px; cursor:pointer; }
     #inBtn { background:#2e8b57; }
     #outBtn { background:#c0392b; }
-    .big:disabled { opacity:.5; }
-    #logout { background:none; border:none; color:#1a4d7a; text-decoration:underline;
-              font-size:14px; margin-top:8px; cursor:pointer; }
+    .big:disabled, .sm:disabled { opacity:.5; }
+    .link { background:none; border:none; color:#1a4d7a; text-decoration:underline;
+            font-size:14px; margin:8px 6px 0; cursor:pointer; }
     #msg { font-size:17px; min-height:24px; margin-top:8px; }
     .ok { color:#2e8b57; } .err { color:#c0392b; }
     .hide { display:none; }
+    /* Admin */
+    #adminBox { text-align:left; }
+    #adminBox h3 { color:#1a4d7a; margin:4px 0 8px; text-align:center; }
+    #map { height:320px; border-radius:12px; margin:8px 0; }
+    .help { font-size:14px; color:#555; margin:4px 0; }
+    .row { display:flex; gap:8px; align-items:center; margin:8px 0; }
+    .row input { flex:1; padding:10px; font-size:16px; border:1px solid #ccc; border-radius:8px; }
+    .sm { padding:12px; font-size:16px; font-weight:bold; border:none; border-radius:10px;
+          color:#fff; background:#1a4d7a; cursor:pointer; width:100%; margin-top:8px; }
+    #hereBtn { background:#555; }
+    #coords { font-size:13px; color:#777; text-align:center; }
   </style>
 </head>
 <body>
@@ -38,13 +51,30 @@
       <div id="gbtn"></div>
     </div>
 
-    <!-- Login unata passe -->
+    <!-- Staff screen -->
     <div id="appBox" class="hide">
       <div id="hello"></div>
       <div id="mail"></div>
       <button class="big" id="inBtn" onclick="mark('IN')">CHECK IN</button>
       <button class="big" id="outBtn" onclick="mark('OUT')">CHECK OUT</button>
-      <button id="logout" onclick="logout()">Logout</button>
+      <button class="link hide" id="adminLink" onclick="openAdmin()">⚙️ Lab location (Admin)</button>
+      <button class="link" onclick="logout()">Logout</button>
+    </div>
+
+    <!-- Admin screen -->
+    <div id="adminBox" class="hide">
+      <h3>⚙️ Lab location</h3>
+      <p class="help">Map eke lab eka thiyena thana <b>click</b> karanna, nathnam rathu marker eka <b>drag</b> karanna.
+        Lab eka athule innawanam yata button eka obanna.</p>
+      <div id="map"></div>
+      <div id="coords"></div>
+      <button class="sm" id="hereBtn" onclick="useMyLocation()">📍 Mama danata inna thana ganna</button>
+      <div class="row">
+        <label for="radius">Durak (meter):</label>
+        <input id="radius" type="number" min="20" max="2000" step="10" oninput="updateCircle()">
+      </div>
+      <button class="sm" id="saveBtn" onclick="saveSettings()">💾 Save</button>
+      <button class="link" onclick="closeAdmin()">← Aapasu</button>
     </div>
 
     <div id="msg"></div>
@@ -57,8 +87,9 @@
   // ========================================
 
   let token = null;
+  let settings = null;
+  let map = null, marker = null, circle = null;
 
-  // Orlosuwa
   setInterval(() => {
     document.getElementById('clock').textContent =
       new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Colombo' });
@@ -68,7 +99,6 @@
   function show(text, cls) { $('msg').textContent = text; $('msg').className = cls || ''; }
   function setBusy(b) { $('inBtn').disabled = b; $('outBtn').disabled = b; }
 
-  // Me phone ekata wenama ID ekak (palaweni parata hadala save karanawa)
   function getDeviceId() {
     try {
       let id = localStorage.getItem('labDeviceId');
@@ -81,20 +111,25 @@
     } catch (e) { return null; }
   }
 
-  // Apps Script ekata request yawanna
   function api(data) {
     data.token = token;
     return fetch(API_URL, { method: 'POST', body: JSON.stringify(data) })
       .then(r => r.json());
   }
 
-  // Google library eka load unama
+  function handleExpired(res) {
+    if (!res.ok && String(res.msg).indexOf('EXPIRED') === 0) {
+      logout();
+      google.accounts.id.prompt();
+      show('Login eka expire wela. Aye login wela try karanna.', 'err');
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- Login ----------
   window.onGoogleLibraryLoad = function () {
-    google.accounts.id.initialize({
-      client_id: CLIENT_ID,
-      callback: onSignIn,
-      auto_select: true
-    });
+    google.accounts.id.initialize({ client_id: CLIENT_ID, callback: onSignIn, auto_select: true });
     google.accounts.id.renderButton($('gbtn'), { theme: 'filled_blue', size: 'large', width: 280 });
     google.accounts.id.prompt();
   };
@@ -106,6 +141,8 @@
       if (!res.ok) { token = null; return show(res.msg, 'err'); }
       $('hello').textContent = 'Hello, ' + res.name + ' 👋';
       $('mail').textContent = res.email;
+      settings = res.settings || null;
+      $('adminLink').classList.toggle('hide', !res.isAdmin);
       $('loginBox').classList.add('hide');
       $('appBox').classList.remove('hide');
       show('');
@@ -116,10 +153,12 @@
     token = null;
     google.accounts.id.disableAutoSelect();
     $('appBox').classList.add('hide');
+    $('adminBox').classList.add('hide');
     $('loginBox').classList.remove('hide');
     show('');
   }
 
+  // ---------- Check in / out ----------
   function mark(type) {
     const deviceId = getDeviceId();
     if (!deviceId) return show('Me browser eke data save karanna bae. Chrome eken open karanna.', 'err');
@@ -127,25 +166,99 @@
 
     setBusy(true);
     show('Location eka gannawa...');
-
     navigator.geolocation.getCurrentPosition(pos => {
       show('Save karanawa...');
       api({
         action: 'mark', type: type, deviceId: deviceId,
-        lat: pos.coords.latitude, lng: pos.coords.longitude
+        lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy
       }).then(res => {
         setBusy(false);
-        if (!res.ok && String(res.msg).indexOf('EXPIRED') === 0) {
-          logout();
-          google.accounts.id.prompt();
-          return show('Login eka expire wela. Aye login wela try karanna.', 'err');
-        }
+        if (handleExpired(res)) return;
         show(res.msg, res.ok ? 'ok' : 'err');
       }).catch(() => { setBusy(false); show('Internet eka check karanna.', 'err'); });
     }, () => {
       setBusy(false);
       show('Location ganna bae. Phone eke Location ON karala, permission "Allow" karanna.', 'err');
     }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
+
+  // ---------- Admin: map ----------
+  function openAdmin() {
+    $('appBox').classList.add('hide');
+    $('adminBox').classList.remove('hide');
+    show('');
+    const s = settings || { LAB_LAT: 6.9271, LAB_LNG: 79.8612, MAX_DISTANCE: 100 };
+    $('radius').value = s.MAX_DISTANCE;
+
+    if (!map) {
+      map = L.map('map').setView([s.LAB_LAT, s.LAB_LNG], 18);
+      const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        { maxZoom: 19, attribution: '© OpenStreetMap' });
+      const sat = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19, attribution: 'Imagery © Esri' });
+      sat.addTo(map);
+      L.control.layers({ 'Satellite': sat, 'Map': street }).addTo(map);
+
+      marker = L.marker([s.LAB_LAT, s.LAB_LNG], { draggable: true }).addTo(map);
+      circle = L.circle([s.LAB_LAT, s.LAB_LNG], { radius: s.MAX_DISTANCE, color: '#2e8b57' }).addTo(map);
+      marker.on('drag', () => moveTo(marker.getLatLng(), false));
+      map.on('click', e => moveTo(e.latlng, false));
+    } else {
+      moveTo(L.latLng(s.LAB_LAT, s.LAB_LNG), true);
+    }
+    setTimeout(() => map.invalidateSize(), 200);
+    updateCoords();
+  }
+
+  function moveTo(latlng, pan) {
+    marker.setLatLng(latlng);
+    circle.setLatLng(latlng);
+    if (pan) map.setView(latlng, Math.max(map.getZoom(), 18));
+    updateCoords();
+  }
+
+  function updateCircle() {
+    const r = Number($('radius').value);
+    if (circle && r > 0) circle.setRadius(r);
+  }
+
+  function updateCoords() {
+    const p = marker ? marker.getLatLng() : null;
+    $('coords').textContent = p ? p.lat.toFixed(6) + ', ' + p.lng.toFixed(6) : '';
+  }
+
+  function useMyLocation() {
+    if (!navigator.geolocation) return show('GPS wada karanne na.', 'err');
+    $('hereBtn').disabled = true;
+    show('Location eka gannawa...');
+    navigator.geolocation.getCurrentPosition(pos => {
+      $('hereBtn').disabled = false;
+      moveTo(L.latLng(pos.coords.latitude, pos.coords.longitude), true);
+      show('Location eka hambauna (±' + Math.round(pos.coords.accuracy) + 'm). Hari nam Save obanna.', 'ok');
+    }, () => {
+      $('hereBtn').disabled = false;
+      show('Location ganna bae. Location ON da balanna.', 'err');
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
+
+  function saveSettings() {
+    const p = marker.getLatLng();
+    const max = Number($('radius').value);
+    $('saveBtn').disabled = true;
+    show('Save karanawa...');
+    api({ action: 'saveSettings', lat: p.lat, lng: p.lng, max: max }).then(res => {
+      $('saveBtn').disabled = false;
+      if (handleExpired(res)) return;
+      if (res.ok) settings = res.settings;
+      show(res.msg, res.ok ? 'ok' : 'err');
+    }).catch(() => { $('saveBtn').disabled = false; show('Internet eka check karanna.', 'err'); });
+  }
+
+  function closeAdmin() {
+    $('adminBox').classList.add('hide');
+    $('appBox').classList.remove('hide');
+    show('');
   }
 </script>
 </body>
